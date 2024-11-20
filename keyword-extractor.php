@@ -2,13 +2,41 @@
 /**
  * Plugin Name: WP Keyword Extractor
  * Description: A plugin to extract keywords from one CSV and output them as frequency values to another CSV!
- * Version: 1.4.9
+ * Version: 1.5.1
  * Author: StratLab Marketing
- */
+ * Author URI: https://strategylab.ca
+ * Text Domain: wp-keyword-extractor
+ * Requires at least: 6.0
+ * Requires PHP: 7.0
+ * Update URI: https://github.com/carterfromsl/wp-keyword-extractor/
+*/
 
 if (!defined('ABSPATH')) {
     exit; // You don't belong here.
 }
+
+// Connect with the StratLab Auto-Updater for plugin updates
+add_action('plugins_loaded', function() {
+    if (class_exists('StratLabUpdater')) {
+        if (!function_exists('get_plugin_data')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        
+        $plugin_file = __FILE__;
+        $plugin_data = get_plugin_data($plugin_file);
+
+        do_action('stratlab_register_plugin', [
+            'slug' => plugin_basename($plugin_file),
+            'repo_url' => 'https://api.github.com/repos/carterfromsl/wp-keyword-extractor/releases/latest',
+            'version' => $plugin_data['Version'], 
+            'name' => $plugin_data['Name'],
+            'author' => $plugin_data['Author'],
+            'homepage' => $plugin_data['PluginURI'],
+            'description' => $plugin_data['Description'],
+            'access_token' => '', // Add if needed for private repo
+        ]);
+    }
+});
 
 class WPKeywordExtractor {
     private $output_url;
@@ -278,17 +306,17 @@ class WPKeywordExtractor {
         // Extract stop words and keywords
         $stop_words = get_option('keyword_extractor_stop_words');
         $stop_words_list = array_merge(explode(',', $stop_words), $this->get_default_stop_words());
-        $keywords = $this->extract_keywords($data, $stop_words_list);
+        $keywords = $this->extract_keywords_by_column($data, $stop_words_list);
     
         // Write keywords to the CSV
-        $this->write_to_csv($keywords, $output_path);
+        $this->write_to_csv_by_column($keywords, $output_path);
     
         // Log success
         error_log('Keyword extraction completed. Results saved to ' . $output_path);
         add_action('admin_notices', function() {
             echo '<div class="notice notice-success"><p>Keyword extraction completed! Results saved to ' . esc_html($output_path) . '</p></div>';
         });
-    }    
+    }
 
     private function get_local_csv_path($csv_url) {
         $upload_dir = wp_upload_dir();
@@ -296,13 +324,20 @@ class WPKeywordExtractor {
             return str_replace($upload_dir['baseurl'], $upload_dir['basedir'], $csv_url);
         }
         return $csv_url;
-    }    
+    }
 
-    private function extract_keywords($data, $stop_words_list) {
+    private function extract_keywords_by_column($data, $stop_words_list) {
         $keywords = [];
     
+        // Initialize keyword storage for each column
+        $column_count = count($data[0]);
+        for ($i = 0; $i < $column_count; $i++) {
+            $keywords[$i] = [];
+        }
+    
+        // Iterate over each row and each column
         foreach ($data as $row) {
-            foreach ($row as $cell) {
+            foreach ($row as $index => $cell) {
                 // Split each cell's content into words, using spaces and common punctuation as delimiters
                 $words = preg_split('/[\s,.;!?]+/', $cell);
     
@@ -314,49 +349,74 @@ class WPKeywordExtractor {
                         continue;
                     }
     
-                    // Count the frequency of each word
-                    if (isset($keywords[$word])) {
-                        $keywords[$word]++;
+                    // Count the frequency of each word in the respective column
+                    if (isset($keywords[$index][$word])) {
+                        $keywords[$index][$word]++;
                     } else {
-                        $keywords[$word] = 1;
+                        $keywords[$index][$word] = 1;
                     }
                 }
             }
         }
     
+        // Sort each column by frequency in descending order
+        foreach ($keywords as $index => $keyword_data) {
+            arsort($keywords[$index]);
+        }
+    
         return $keywords;
-    }    
+    }
 
-    private function write_to_csv($keywords, $output_path) {
-		// Sort the keywords array by frequency in descending order
-		arsort($keywords);
-
-		// Ensure the directory exists
-		if (!file_exists(dirname($output_path))) {
-			mkdir(dirname($output_path), 0755, true);
-		}
-
-		// Open the file for writing
-		$file = fopen($output_path, 'w');
-
-		// Write each word and its frequency to the CSV
-		foreach ($keywords as $word => $count) {
-			fputcsv($file, [$word, $count]);
-		}
-
-		// Close the file
-		fclose($file);
-	}
+    private function write_to_csv_by_column($keywords, $output_path) {
+        // Ensure the directory exists
+        if (!file_exists(dirname($output_path))) {
+            mkdir(dirname($output_path), 0755, true);
+        }
+    
+        // Open the file for writing
+        $file = fopen($output_path, 'w');
+    
+        // Get the number of columns
+        $column_count = count($keywords);
+    
+        // Write the header row
+        $header = [];
+        for ($i = 0; $i < $column_count; $i++) {
+            $header[] = 'column_' . ($i + 1);
+        }
+        fputcsv($file, $header);
+    
+        // Determine the maximum number of unique keywords in any column
+        $max_keywords = max(array_map('count', $keywords));
+    
+        // Write each row of keywords and their frequencies
+        for ($i = 0; $i < $max_keywords; $i++) {
+            $row = [];
+            for ($j = 0; $j < $column_count; $j++) {
+                if (isset(array_keys($keywords[$j])[$i])) {
+                    $key = array_keys($keywords[$j])[$i];
+                    $row[] = $key . ':' . $keywords[$j][$key];
+                } else {
+                    $row[] = '';
+                }
+            }
+            fputcsv($file, $row);
+        }
+    
+        // Close the file
+        fclose($file);
+    }
 
     private function get_default_stop_words() {
         return [
             'the', 'is', 'at', 'which', 'on', 'and', 'a', 'in', 'with', 'not',
-            'from', 'to', 'onto', 'into', 'was', 'what', 'that', 'we\'re', 'https', 'http',
-            'this', 'your', 'when', 'have','it\'s', 'don\'t', 'just', 'like', 'nbsp', 'amp',
+            'from', 'to', 'onto', 'into', 'was', 'what', 'that', 'we\'re',
+            'this', 'your', 'when', 'have','it\'s', 'don\'t', 'just', 'like',
             'been', 'here', 'there','that\'s', 'where', 'can', 'can\'t', 'cannot', 'wont',
-            'you\'re', 'i\'ve', 'i\'ll', 'there\'s', 'those', 'he\'s', 'she\'s', 'she',
-            'isn\'t', 'what\'s', 'we\'ll', 'they\'re', 'then', 'doesn\'t', 'what\'s',
-            'dont', 'these', 'their', 'also', 'shit', 'shitty', 'fuck', 'fucking', 'fucked'
+            'you\'re', '&nbsp', 'i\'ve', 'i\'ll', 'there\'s', 'those', 'he\'s', 'she\'s', 'she',
+            'isn\'t', 'what\'s', 'we\'ll', 'they\'re', 'then', 'doesn\'t', 'what\'s', '&amp', 'https',
+            'dont', 'these', '&gt', '&lt', 'their', 'also', 'nigger', 'niggers', 'shit', 'jew', 'jews',
+            'fuck', 'fucking', 'nigga'
         ];
     }
 }
